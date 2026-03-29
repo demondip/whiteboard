@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Whiteboard Pro</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --panel-bg: rgba(255, 255, 255, 0.98);
+            --border: #cbd5e1;
+            --shadow: 0 10px 30px rgba(0,0,0,0.15);
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body, html { width: 100%; height: 100%; overflow: hidden; background: #1e1e1e; font-family: 'Segoe UI', sans-serif; }
+        
+        #toolbar-container {
+            position: fixed; top: 15px; left: 50%; transform: translateX(-50%);
+            z-index: 3000; transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+        #toolbar-container.minimized { transform: translateX(-50%) translateY(-85px); }
+        
+        #toolbar {
+            background: var(--panel-bg); display: flex; align-items: center;
+            padding: 8px 18px; border-radius: 50px; border: 1px solid var(--border);
+            box-shadow: var(--shadow); gap: 12px; backdrop-filter: blur(8px);
+        }
+        #minimize-toggle {
+            position: absolute; bottom: -25px; left: 50%; transform: translateX(-50%);
+            background: var(--panel-bg); border: 1px solid var(--border);
+            border-radius: 0 0 10px 10px; padding: 2px 15px; cursor: pointer;
+            font-size: 12px; box-shadow: var(--shadow);
+        }
+        .group { display: flex; align-items: center; gap: 8px; border-right: 1px solid var(--border); padding-right: 10px; }
+        .group:last-child { border: none; padding-right: 0; }
+        
+        .tool {
+            background: none; border: 2px solid transparent; border-radius: 12px;
+            padding: 6px; cursor: pointer; font-size: 20px; transition: 0.2s;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .tool:hover { background: #f1f5f9; }
+        .tool.active { background: #eff6ff; border-color: var(--primary); }
+
+        .color-swatch { width: 22px; height: 22px; border-radius: 50%; border: 2px solid #fff; cursor: pointer; box-shadow: 0 0 0 1px #ccc; }
+        .swatch-red { background: #ff0000; }
+        .swatch-blue { background: #0000ff; }
+        .swatch-black { background: #000000; }
+        .swatch-purple { background: #a020f0; }
+
+        .control-item { display: flex; flex-direction: column; align-items: center; }
+        .label { font-size: 8px; font-weight: 900; color: #64748b; text-transform: uppercase; margin-bottom: 2px; }
+        input[type="range"] { width: 45px; cursor: pointer; }
+
+        #viewport { position: relative; width: 100vw; height: 100vh; }
+        canvas { position: absolute; top: 0; left: 0; touch-action: none; }
+        
+        #pdfCanvas { z-index: 1; }
+        #pdfInk { z-index: 2; }
+        #boardBg { z-index: 10; display: none; background: white; }
+        #boardInk { z-index: 11; display: none; }
+        #laserCanvas { z-index: 100; pointer-events: none; } /* Temporary layer */
+
+        #nav-overlay {
+            position: fixed; bottom: 20px; right: 20px;
+            background: var(--panel-bg); padding: 8px 15px;
+            border-radius: 50px; display: none; align-items: center; gap: 15px;
+            box-shadow: var(--shadow); z-index: 2000;
+        }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <div id="toolbar-container">
+        <div id="toolbar">
+            <div class="group">
+                <button class="tool active" id="penBtn" title="Pen">✏️</button>
+                <button class="tool" id="eraserBtn" title="Eraser">🧽</button>
+                <button class="tool" id="laserBtn" title="Laser Pointer">🔦</button>
+            </div>
+            <div class="group">
+                <div class="color-swatch swatch-red" onclick="setInkColor('#ff0000')"></div>
+                <div class="color-swatch swatch-blue" onclick="setInkColor('#0000ff')"></div>
+                <div class="color-swatch swatch-black" onclick="setInkColor('#000000')"></div>
+                <div class="color-swatch swatch-purple" onclick="setInkColor('#a020f0')"></div>
+                <input type="color" id="colorPicker" value="#ff0000" style="width:20px; height:20px; border:none; background:none; cursor:pointer;">
+            </div>
+            <div class="group">
+                <div class="control-item"><span class="label">Pen</span><input type="range" id="brushSize" min="1" max="25" value="3"></div>
+                <div class="control-item"><span class="label">Eraser</span><input type="range" id="eraserSize" min="10" max="150" value="50"></div>
+            </div>
+            <div class="group">
+                <button class="tool" id="blankBtn" title="Toggle Blank Board">⬜</button>
+                <button class="tool" id="saveBtn" title="Save Screenshot">📸</button>
+                <button class="tool" id="undoBtn">↩️</button>
+                <button class="tool" id="importBtn">📊</button>
+                <button class="tool" id="clearBtn">🗑️</button>
+            </div>
+        </div>
+        <button id="minimize-toggle">▲ Minimize</button>
+    </div>
+
+    <div id="nav-overlay">
+        <button class="tool" id="prevSlide">⬅️</button>
+        <span id="pageCounter" style="font-weight: bold; font-size: 14px;">1 / 1</span>
+        <button class="tool" id="nextSlide">➡️</button>
+    </div>
+
+    <input type="file" id="fileInput" class="hidden" accept="application/pdf">
+
+    <div id="viewport">
+        <canvas id="pdfCanvas"></canvas>
+        <canvas id="pdfInk"></canvas>
+        <canvas id="boardBg"></canvas>
+        <canvas id="boardInk"></canvas>
+        <canvas id="laserCanvas"></canvas>
+    </div>
+
+<script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+    const canvases = {
+        pdf: { bg: document.getElementById('pdfCanvas'), ink: document.getElementById('pdfInk') },
+        board: { bg: document.getElementById('boardBg'), ink: document.getElementById('boardInk') },
+        laser: document.getElementById('laserCanvas')
+    };
+    const ctx = {
+        pdfBg: canvases.pdf.bg.getContext('2d'),
+        pdfInk: canvases.pdf.ink.getContext('2d'),
+        boardBg: canvases.board.bg.getContext('2d'),
+        boardInk: canvases.board.ink.getContext('2d'),
+        laser: canvases.laser.getContext('2d')
+    };
+
+    let mode = 'pen', isDrawing = false, isBlankMode = false, pdfDoc = null, pageNum = 1;
+    let history = { pdf: [], board: [] };
+
+    function init() {
+        [canvases.pdf.bg, canvases.pdf.ink, canvases.board.bg, canvases.board.ink, canvases.laser].forEach(c => {
+            c.width = window.innerWidth;
+            c.height = window.innerHeight;
+        });
+        ctx.pdfBg.fillStyle = "#1e1e1e";
+        ctx.pdfBg.fillRect(0,0,window.innerWidth, window.innerHeight);
+        ctx.boardBg.fillStyle = "#ffffff";
+        ctx.boardBg.fillRect(0,0,window.innerWidth, window.innerHeight);
+    }
+    window.onresize = init;
+    init();
+
+    // --- Switch Logic ---
+    document.getElementById('blankBtn').onclick = function() {
+        isBlankMode = !isBlankMode;
+        this.textContent = isBlankMode ? "📑" : "⬜";
+        this.classList.toggle('active', isBlankMode);
+        canvases.board.bg.style.display = isBlankMode ? 'block' : 'none';
+        canvases.board.ink.style.display = isBlankMode ? 'block' : 'none';
+    };
+
+    // --- Save Screenshot ---
+    document.getElementById('saveBtn').onclick = function() {
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = window.innerWidth;
+        tempCanvas.height = window.innerHeight;
+        const tempCtx = tempCanvas.getContext('2d');
+
+        if(isBlankMode) {
+            tempCtx.drawImage(canvases.board.bg, 0, 0);
+            tempCtx.drawImage(canvases.board.ink, 0, 0);
+        } else {
+            tempCtx.drawImage(canvases.pdf.bg, 0, 0);
+            tempCtx.drawImage(canvases.pdf.ink, 0, 0);
+        }
+
+        const link = document.createElement('a');
+        link.download = `Lesson-Note-${Date.now()}.png`;
+        link.href = tempCanvas.toDataURL();
+        link.click();
+    };
+
+    // --- Drawing System ---
+    function getActiveCtx() { return isBlankMode ? ctx.boardInk : ctx.pdfInk; }
+    function getActiveCanvas() { return isBlankMode ? canvases.board.ink : canvases.pdf.ink; }
+
+    function getPos(e) {
+        const x = e.clientX || (e.touches && e.touches[0].clientX);
+        const y = e.clientY || (e.touches && e.touches[0].clientY);
+        return { x, y };
+    }
+
+    function startDraw(e) {
+        if(mode === 'laser') return;
+        isDrawing = true;
+        const target = getActiveCtx();
+        const pos = getPos(e);
+        target.beginPath();
+        target.moveTo(pos.x, pos.y);
+    }
+
+    function draw(e) {
+        const pos = getPos(e);
+        
+        if(mode === 'laser') {
+            ctx.laser.clearRect(0, 0, window.innerWidth, window.innerHeight);
+            ctx.laser.beginPath();
+            ctx.laser.arc(pos.x, pos.y, 10, 0, Math.PI * 2);
+            ctx.laser.fillStyle = "rgba(255, 0, 0, 0.8)";
+            ctx.laser.shadowBlur = 15;
+            ctx.laser.shadowColor = "red";
+            ctx.laser.fill();
+            return;
+        }
+
+        if(!isDrawing) return;
+        const target = getActiveCtx();
+        target.lineCap = 'round';
+        target.lineJoin = 'round';
+        
+        if(mode === 'eraser') {
+            target.globalCompositeOperation = 'destination-out';
+            target.lineWidth = document.getElementById('eraserSize').value;
+        } else {
+            target.globalCompositeOperation = 'source-over';
+            target.strokeStyle = document.getElementById('colorPicker').value;
+            target.lineWidth = document.getElementById('brushSize').value;
+        }
+        
+        target.lineTo(pos.x, pos.y);
+        target.stroke();
+    }
+
+    function stopDraw() { 
+        if(isDrawing) saveState();
+        isDrawing = false; 
+        ctx.laser.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    }
+
+    // --- PDF ---
+    document.getElementById('importBtn').onclick = () => document.getElementById('fileInput').click();
+    document.getElementById('fileInput').onchange = async (e) => {
+        const file = e.target.files[0];
+        if(!file) return;
+        const reader = new FileReader();
+        reader.onload = async function() {
+            pdfDoc = await pdfjsLib.getDocument(new Uint8Array(this.result)).promise;
+            pageNum = 1;
+            renderPage();
+            document.getElementById('nav-overlay').style.display = 'flex';
+        };
+        reader.readAsArrayBuffer(file);
+    };
+
+    async function renderPage() {
+        const page = await pdfDoc.getPage(pageNum);
+        const viewport = page.getViewport({ scale: 1 });
+        const scale = Math.max(window.innerWidth / viewport.width, window.innerHeight / viewport.height);
+        ctx.pdfBg.fillStyle = "white";
+        ctx.pdfBg.fillRect(0,0,window.innerWidth, window.innerHeight);
+        await page.render({ canvasContext: ctx.pdfBg, viewport: page.getViewport({ scale: scale }) }).promise;
+        document.getElementById('pageCounter').textContent = `${pageNum} / ${pdfDoc.numPages}`;
+    }
+
+    // --- Controls ---
+    function setInkColor(c) { 
+        document.getElementById('colorPicker').value = c; 
+        setTool('pen', 'penBtn'); 
+    }
+    
+    function setTool(newMode, btnId) {
+        mode = newMode;
+        document.querySelectorAll('.tool').forEach(b => b.classList.remove('active'));
+        document.getElementById(btnId).classList.add('active');
+    }
+
+    document.getElementById('penBtn').onclick = () => setTool('pen', 'penBtn');
+    document.getElementById('eraserBtn').onclick = () => setTool('eraser', 'eraserBtn');
+    document.getElementById('laserBtn').onclick = () => setTool('laser', 'laserBtn');
+    
+    document.getElementById('undoBtn').onclick = () => {
+        const type = isBlankMode ? 'board' : 'pdf';
+        if (history[type].length < 2) return;
+        history[type].pop();
+        const img = new Image();
+        img.src = history[type][history[type].length - 1];
+        img.onload = () => {
+            getActiveCtx().clearRect(0,0,window.innerWidth, window.innerHeight);
+            getActiveCtx().globalCompositeOperation = 'source-over';
+            getActiveCtx().drawImage(img, 0, 0);
+        };
+    };
+
+    function saveState() {
+        const type = isBlankMode ? 'board' : 'pdf';
+        history[type].push(getActiveCanvas().toDataURL());
+        if(history[type].length > 20) history[type].shift();
+    }
+
+    document.getElementById('clearBtn').onclick = () => { if(confirm("Clear current ink?")) getActiveCtx().clearRect(0,0,window.innerWidth, window.innerHeight); };
+    document.getElementById('prevSlide').onclick = () => { if(pageNum > 1) { pageNum--; renderPage(); } };
+    document.getElementById('nextSlide').onclick = () => { if(pageNum < pdfDoc.numPages) { pageNum++; renderPage(); } };
+    document.getElementById('minimize-toggle').onclick = function() {
+        const t = document.getElementById('toolbar-container');
+        t.classList.toggle('minimized');
+        this.textContent = t.classList.contains('minimized') ? "▼ Maximize" : "▲ Minimize";
+    };
+
+    window.addEventListener('mousedown', startDraw);
+    window.addEventListener('mousemove', draw);
+    window.addEventListener('mouseup', stopDraw);
+    window.addEventListener('touchstart', startDraw);
+    window.addEventListener('touchmove', draw);
+    window.addEventListener('touchend', stopDraw);
+</script>
+</body>
+</html>
